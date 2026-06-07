@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>InstaDL — Instagram Video Downloader</title>
+<style>
+  :root{
+    --bg:#fafafa; --card:#fff; --muted:#8e6e6e;
+    --accent1:#f58529; --accent2:#dd2a7b; --accent3:#8134af;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    margin:0;
+    font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;
+    background:linear-gradient(180deg,#ffffff 0%,#f5f5f7 100%);
+    padding-top:72px;
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+  }
+
+  /* ========== Topbar / Menu ========== */
+  .site-header {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 1200;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+  }
+  .topbar {
+    height: 64px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:10px 16px;
+    background: linear-gradient(90deg,#f58529,#dd2a7b 40%,#8134af);
+    color:#fff;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  }
+  .brand { display:flex; align-items:center; gap:10px; }
+  .logo { width:42px; height:42px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.95); color:#111; border-radius:10px; font-weight:700; }
+  .title { font-weight:700; font-size:18px; }
+  .menu-btn { background:transparent; border:0; cursor:pointer; padding:8px; border-radius:8px; display:inline-grid; place-items:center; }
+  .hamburger { width:22px; height:16px; display:flex; flex-direction:column; justify-content:space-between; }
+  .hamburger span { display:block; height:2.5px; background:#fff; border-radius:2px; transition: transform .22s ease, opacity .18s ease; }
+  .menu {
+    position: absolute;
+    top: calc(72px + 8px);
+    right: 12px;
+    width: 160px;
+    background: #fff;
+    border-radius:10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+    padding: 8px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(-8px) scale(.99);
+    transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
+    pointer-events: none;
+  }
+  @media (max-width:520px) { .menu { right: 8px; left: 8px; width: auto; } }
+  .menu-link { display:block; padding:10px 12px; text-decoration:none; color:#111; font-weight:600; border-radius:8px; }
+  .menu-link:hover { background:#fff4f0; color:#dd2a7b; }
+  .site-header.open .menu { visibility: visible; opacity: 1; transform: translateY(0) scale(1); transition-delay: 0s; pointer-events: auto; }
+  .site-header.open .hamburger span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  .site-header.open .hamburger span:nth-child(2) { opacity: 0; transform: scaleX(.2); }
+  .site-header.open .hamburger span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* layout container */
+  .app { max-width:920px; margin: 18px auto; padding: 12px; }
+  .card{background:var(--card);border-radius:14px;padding:20px;box-shadow:0 8px 24px rgba(20,20,20,0.06);margin-bottom:22px;}
+  .paste-row{display:flex;gap:10px;align-items:center;}
+  .input-wrap{position:relative;flex:1;}
+  input[type="url"]{width:100%;padding:14px 42px 14px 16px;border-radius:12px;border:1px solid #e6e6e6;font-size:16px;outline:none;box-sizing:border-box;}
+  input[type="url"]:focus{box-shadow:0 0 0 3px rgba(99,102,241,0.08);border-color:#c7c3ff;}
+  .clear-x{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:#f4f4f4;border:1px solid #eee;cursor:pointer;opacity:0;pointer-events:none;transition:all .15s;}
+  .clear-x.visible{opacity:1;pointer-events:auto;}
+  .btn{padding:12px 16px;border-radius:12px;border:none;background:#111;color:#fff;cursor:pointer;font-weight:600;}
+  .btn.secondary{background:transparent;border:1px solid #ddd;color:#111;font-weight:600;}
+  .result{margin-top:16px;display:grid;grid-template-columns:1fr 320px;gap:16px;align-items:start;}
+  @media(max-width:880px){ .result{grid-template-columns:1fr;} .menu-list{grid-auto-flow:row;} }
+  .player{background:#000;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:220px;position:relative;}
+  video{width:100%;height:100%;display:block;object-fit:cover;}
+  .meta{display:flex;flex-direction:column;gap:8px;padding:8px;}
+  .meta .title{font-weight:700;}
+  .meta .muted{color:var(--muted);font-size:13px;}
+  .download-row{display:flex;gap:8px;align-items:center;}
+  .hint{font-size:14px;color:var(--muted);margin-top:10px;}
+  .error{color:#c53030;font-weight:600}
+  section { margin-bottom: 38px; }
+  h2 { margin-top: 0; font-size:18px; }
+</style>
+</head>
+<body>
+
+<header class="site-header" role="banner">
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">📷</div>
+      <div class="title">InstaDL</div>
+    </div>
+    <button id="menuBtn" class="menu-btn" aria-expanded="false" aria-controls="siteMenu" aria-label="Open menu">
+      <span class="hamburger" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </span>
+    </button>
+  </div>
+  <nav id="siteMenu" class="menu" aria-hidden="true" role="navigation">
+    <a class="menu-link" href="#how">How to Download</a>
+    <a class="menu-link" href="#download">Download</a>
+    <a class="menu-link" href="#paste">Paste Link</a>
+    <a class="menu-link" href="#info">Info</a>
+  </nav>
+</header>
+
+<div class="app">
+  <section id="paste" class="card">
+    <h2>Paste Link</h2>
+    <p style="margin-top:0;color:#555">⚠️ <strong>Note:</strong> Only public Instagram videos can be downloaded here.</p>
+    <div class="paste-row">
+      <div class="input-wrap">
+        <input id="inputUrl" type="url" placeholder="Paste Instagram post link here" />
+        <div id="clearX" class="clear-x" title="Clear">✕</div>
+      </div>
+      <button id="fetchBtn" class="btn">Fetch</button>
+    </div>
+    <div id="message" class="hint">Paste an Instagram post URL and click <strong>Fetch</strong>.</div>
+    <div id="resultArea" class="result" style="display:none">
+      <div class="player card" id="playerWrap"></div>
+      <div class="meta card" style="min-height:200px">
+        <div id="metaTitle" class="title">—</div>
+        <div id="metaDesc" class="muted">—</div>
+        <div style="margin-top:12px" class="download-row">
+          <button id="downloadBtn" class="btn">Download</button>
+          <button id="openBtn" class="btn secondary">Open in new tab</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="download" class="card">
+    <h2>Download</h2>
+    <p>Unlimited downloads for public posts. Paste the link above and hit Download.</p>
+  </section>
+
+  <section id="how" class="card">
+    <h2>How to Download</h2>
+    <ol>
+      <li>Copy the link to a public Instagram post.</li>
+      <li>Paste the link above.</li>
+      <li>Click <strong>Fetch</strong>.</li>
+      <li>Press <strong>Download</strong> to save it.</li>
+    </ol>
+  </section>
+
+  <section id="info" class="card">
+    <h2>Why Use InstaDL?</h2>
+    <ul>
+      <li>Fast & free.</li>
+      <li>Mobile-friendly.</li>
+      <li>No signup required.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+const siteHeader = document.querySelector('.site-header');
+const menuBtn = document.getElementById('menuBtn');
+const siteMenu = document.getElementById('siteMenu');
+menuBtn.addEventListener('click', () => {
+  siteHeader.classList.toggle('open');
+  const expanded = siteHeader.classList.contains('open');
+  menuBtn.setAttribute('aria-expanded', expanded);
+  siteMenu.setAttribute('aria-hidden', !expanded);
+});
+
+// Backend URL placeholder
+const BACKEND_URL = "https://your-backend.onrender.com";
+
+const input = document.getElementById('inputUrl');
+const clearX = document.getElementById('clearX');
+const fetchBtn = document.getElementById('fetchBtn');
+const message = document.getElementById('message');
+const resultArea = document.getElementById('resultArea');
+const playerWrap = document.getElementById('playerWrap');
+const metaTitle = document.getElementById('metaTitle');
+const metaDesc = document.getElementById('metaDesc');
+const downloadBtn = document.getElementById('downloadBtn');
+const openBtn = document.getElementById('openBtn');
+
+function toggleClear(){ input.value.trim() ? clearX.classList.add('visible') : clearX.classList.remove('visible'); }
+input.addEventListener('input', toggleClear);
+clearX.addEventListener('click', ()=>{ input.value=''; toggleClear(); input.focus(); });
+
+function isValidUrl(str){ try{ new URL(str); return true; }catch(e){ return false; } }
+
+async function fetchPost(){
+  const url = input.value.trim();
+  if(!url || !isValidUrl(url)){ message.innerHTML = '<span class="error">Enter a valid URL.</span>'; return; }
+  message.textContent = 'Fetching...';
+  fetchBtn.disabled = true;
+  resultArea.style.display = 'none';
+  playerWrap.innerHTML = '';
+  try{
+    const res = await fetch(BACKEND_URL + "/api/fetch", {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if(!res.ok){ message.innerHTML = '<span class="error">Server error</span>'; return; }
+    const data = await res.json();
+    if(!data.success){ message.innerHTML = '<span class="error">'+(data.message||'Could not fetch')+'</span>'; return; }
+    message.textContent = '';
+    resultArea.style.display = 'grid';
+    const videoUrl = data.videoUrl;
+    const video = document.createElement('video');
+    video.controls = true; video.src = videoUrl;
+    playerWrap.appendChild(video);
+    metaTitle.textContent = data.title || 'Instagram Video';
+    metaDesc.textContent = data.author_name ? 'By '+data.author_name : '';
+    downloadBtn.onclick = () => { window.location = BACKEND_URL + "/api/download?url=" + encodeURIComponent(videoUrl); };
+    openBtn.onclick = () => { window.open(videoUrl, '_blank'); };
+  } catch(err){
+    console.error(err);
+    message.innerHTML = '<span class="error">Network or server error.</span>';
+  } finally {
+    fetchBtn.disabled = false;
+  }
+}
+fetchBtn.addEventListener('click', fetchPost);
+input.addEventListener('keydown', (e)=>{ if(e.key === 'Enter') fetchPost(); });
+</script>
+</body>
+                                                      </html>
