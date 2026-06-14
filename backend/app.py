@@ -1,14 +1,14 @@
 import os
-import requests
+import re
 import random
 import string
-import re
 import time
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+import requests
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://toolifyx.netlify.app", "http://localhost:7700"])
 
 session = requests.Session()
 session.headers.update({
@@ -18,15 +18,7 @@ session.headers.update({
     "Referer": "https://www.instagram.com/",
 })
 
-# ==========================
-# CACHE (simple in-memory)
-# ==========================
-
 cache = {}
-
-# ==========================
-# UTIL
-# ==========================
 
 def random_string(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
@@ -52,119 +44,146 @@ def extract_shortcode(url):
     return None
 
 # ==========================
-# METHOD 1: SNAPINSTA.APP (Most reliable for public posts)
+# NEW: CLIENT-SIDE EXTRACTION ENDPOINT
+# Accepts the direct video URL found by frontend
 # ==========================
 
-def fetch_snapinsta(url):
-    """Scrape snapinsta.app - works for public posts without cookies"""
-    try:
-        # Get the page first to grab any tokens
-        init = session.get("https://snapinsta.app/", timeout=10)
-        if init.status_code != 200:
-            return None
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "ok",
+        "service": "Instagram Video Proxy API",
+        "version": "4.0",
+        "methods": ["client-extract", "proxy-download"]
+    })
 
-        # Try to find token
-        token_match = re.search(r'name="_token"\s+value="([^"]+)"', init.text)
-        token = token_match.group(1) if token_match else ""
+@app.route("/api/health")
+def health():
+    return jsonify({
+        "status": "healthy",
+        "cache_size": len(cache)
+    })
 
-        # Submit URL
-        res = session.post(
-            "https://snapinsta.app/action.php",
-            data={"url": url, "token": token, "action": "post"},
-            timeout=20,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": "https://snapinsta.app",
-                "Referer": "https://snapinsta.app/",
-            }
-        )
+@app.route("/api/extract", methods=["POST"])
+def extract():
+    """
+    NEW: Frontend sends the Instagram page HTML here,
+    we extract video URLs server-side as a fallback.
+    Or frontend can extract in browser and skip this.
+    """
+    data = request.get_json() or {}
+    html = data.get("html", "")
+    url = data.get("url", "").strip()
 
-        if res.status_code != 200:
-            return None
+    if not html and not url:
+        return jsonify({"success": False, "message": "No HTML or URL provided"}), 400
 
-        text = res.text
-
-        # Method A: Look for direct download link
-        dl_match = re.search(r'href="(https://[^"]+\.mp4[^"]*)"', text)
-        if dl_match:
-            return {
-                "video_url": dl_match.group(1),
-                "title": "Instagram Video",
-                "thumbnail": "",
-                "uploader": "",
-                "source": "snapinsta"
-            }
-
-        # Method B: Look for video tag source
-        vid_match = re.search(r'<video[^>]+src="(https://[^"]+)"', text)
-        if vid_match:
-            return {
-                "video_url": vid_match.group(1),
-                "title": "Instagram Video",
-                "thumbnail": "",
-                "uploader": "",
-                "source": "snapinsta"
-            }
-
-        # Method C: Look for any data-url attributes
-        data_match = re.search(r'data-url="(https://[^"]+\.mp4[^"]*)"', text)
-        if data_match:
-            return {
-                "video_url": data_match.group(1),
-                "title": "Instagram Video",
-                "thumbnail": "",
-                "uploader": "",
-                "source": "snapinsta"
-            }
-
-    except Exception as e:
-        print(f"[snapinsta] Error: {e}")
-    return None
-
-
-# ==========================
-# METHOD 2: SAVEFROM.NET API
-# ==========================
-
-def fetch_savefrom(url):
-    """Use savefrom.net API"""
-    try:
-        res = session.post(
-            "https://savefrom.net/api/convert",
-            data={"url": url},
-            timeout=20,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": "https://savefrom.net",
-                "Referer": "https://savefrom.net/",
-            }
-        )
-        if res.status_code == 200:
+    # Try to extract from provided HTML first
+    if html:
+        # Look for video_url in Instagram's embedded JSON
+        json_match = re.search(r'<script type="text/javascript">window\._sharedData = ({.*?});</script>', html, re.DOTALL)
+        if json_match:
             try:
-                data = res.json()
-                video_url = data.get("url") or data.get("download_url")
+                import json
+                shared_data = json.loads(json_match.group(1))
+                media = shared_data.get("entry_data", {}).get("PostPage", [{}])[0].get("graphql", {}).get("shortcode_media", {})
+                video_url = media.get("video_url")
                 if video_url:
-                    return {
-                        "video_url": video_url,
-                        "title": data.get("meta", {}).get("title", "Instagram Video"),
-                        "thumbnail": data.get("thumb", ""),
-                        "uploader": "",
-                        "source": "savefrom"
-                    }
-            except:
-                # Sometimes returns HTML instead of JSON
-                pass
-    except Exception as e:
-        print(f"[savefrom] Error: {e}")
-    return None
+                    return jsonify({
+                        "success": True,
+                        "videoUrl": video_url,
+                        "title": media.get("title", "Instagram Video"),
+                        "thumbnail": media.get("display_url", ""),
+                        "uploader": media.get("owner", {}).get("username", ""),
+                        "is_video": media.get("is_video", False)
+                    })
+            except Exception as e:
+                print(f"[extract] JSON parse error: {e}")
+
+        # Fallback: regex for video URL in HTML
+        vid_match = re.search(r'"video_url":"(https://[^"]+)"', html)
+        if vid_match:
+            return jsonify({
+                "success": True,
+                "videoUrl": vid_match.group(1).replace("\\u0026", "&"),
+                "title": "Instagram Video",
+                "thumbnail": "",
+                "uploader": ""
+            })
+
+    # If no HTML provided, try to fetch the page ourselves (likely to fail on Render)
+    if url:
+        try:
+            r = session.get(url, timeout=10, headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            })
+            if r.status_code == 200:
+                # Same extraction logic on fetched HTML
+                json_match = re.search(r'<script type="text/javascript">window\._sharedData = ({.*?});</script>', r.text, re.DOTALL)
+                if json_match:
+                    try:
+                        import json
+                        shared_data = json.loads(json_match.group(1))
+                        media = shared_data.get("entry_data", {}).get("PostPage", [{}])[0].get("graphql", {}).get("shortcode_media", {})
+                        video_url = media.get("video_url")
+                        if video_url:
+                            return jsonify({
+                                "success": True,
+                                "videoUrl": video_url,
+                                "title": media.get("title", "Instagram Video"),
+                                "thumbnail": media.get("display_url", ""),
+                                "uploader": media.get("owner", {}).get("username", ""),
+                                "is_video": media.get("is_video", False)
+                            })
+                    except:
+                        pass
+        except Exception as e:
+            print(f"[extract] Fetch error: {e}")
+
+    return jsonify({
+        "success": False,
+        "message": "Could not extract video URL. Instagram may require login."
+    }), 400
 
 
-# ==========================
-# METHOD 3: YT-DLP (Last resort - usually fails without cookies)
-# ==========================
+@app.route("/api/fetch", methods=["POST"])
+def fetch():
+    """
+    LEGACY: Try multiple methods. Keep as fallback.
+    """
+    data = request.get_json() or {}
+    url = data.get("url", "").strip()
 
-def fetch_ytdlp(url):
-    """Try yt-dlp - will likely fail without cookies but worth a shot"""
+    if not url:
+        return jsonify({"success": False, "message": "No URL provided"}), 400
+
+    if "instagram.com" not in url:
+        return jsonify({"success": False, "message": "Invalid Instagram URL"}), 400
+
+    shortcode = extract_shortcode(url)
+    if not shortcode:
+        return jsonify({"success": False, "message": "Could not extract post ID from URL"}), 400
+
+    # Try yt-dlp with cookies if available
+    result = try_ytdlp(url)
+    if result:
+        return jsonify({
+            "success": True,
+            "videoUrl": result["video_url"],
+            "title": result.get("title", "Instagram Video"),
+            "thumbnail": result.get("thumbnail", ""),
+            "uploader": result.get("uploader", ""),
+            "source": "ytdlp"
+        })
+
+    return jsonify({
+        "success": False,
+        "message": "Failed to fetch video. Instagram requires authentication for most content now. Try using a browser extension or the client-side method.",
+    }), 500
+
+
+def try_ytdlp(url):
+    """Try yt-dlp with cookies file if available"""
     try:
         import yt_dlp
         ydl_opts = {
@@ -181,6 +200,12 @@ def fetch_ytdlp(url):
                 "Referer": "https://www.instagram.com/",
             },
         }
+
+        # Check for cookies file
+        cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+        if os.path.exists(cookies_path):
+            ydl_opts["cookiefile"] = cookies_path
+            print(f"[ytdlp] Using cookies file: {cookies_path}")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -207,7 +232,6 @@ def fetch_ytdlp(url):
                 "title": info.get("title", "Instagram Video"),
                 "thumbnail": info.get("thumbnail", ""),
                 "uploader": info.get("uploader", ""),
-                "source": "ytdlp"
             }
 
     except Exception as e:
@@ -215,143 +239,9 @@ def fetch_ytdlp(url):
     return None
 
 
-# ==========================
-# METHOD 4: RAPIDAPI (Requires API key)
-# ==========================
-
-def fetch_rapidapi(url):
-    """RapidAPI Instagram downloader"""
-    api_key = os.getenv("RAPIDAPI_KEY")
-    if not api_key:
-        return None
-
-    try:
-        res = session.get(
-            "https://instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com/get-info-rapid/",
-            params={"url": url},
-            timeout=15,
-            headers={
-                "X-RapidAPI-Key": api_key,
-                "X-RapidAPI-Host": "instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com",
-            }
-        )
-        if res.status_code == 200:
-            data = res.json()
-            video_url = data.get("video_url") or data.get("download_url")
-            if video_url:
-                return {
-                    "video_url": video_url,
-                    "title": data.get("title", "Instagram Video"),
-                    "thumbnail": data.get("thumbnail", ""),
-                    "uploader": data.get("username", ""),
-                    "source": "rapidapi"
-                }
-    except Exception as e:
-        print(f"[rapidapi] Error: {e}")
-    return None
-
-
-# ==========================
-# FETCH CONTROLLER
-# ==========================
-
-def get_video(url):
-    """Try multiple methods, return first success"""
-    if url in cache:
-        # Cache expires after 10 minutes
-        if time.time() - cache[url].get("cached_at", 0) < 600:
-            return cache[url]["data"]
-        else:
-            del cache[url]
-
-    methods = [
-        ("snapinsta", fetch_snapinsta),
-        ("savefrom", fetch_savefrom),
-        ("rapidapi", fetch_rapidapi),
-        ("ytdlp", fetch_ytdlp),
-    ]
-
-    errors = []
-
-    for name, method in methods:
-        try:
-            print(f"[fetch] Trying {name}...")
-            result = method(url)
-            if result and result.get("video_url"):
-                print(f"[fetch] Success with {name}")
-                cache[url] = {
-                    "data": result,
-                    "cached_at": time.time()
-                }
-                return result
-        except Exception as e:
-            err_msg = f"{name}: {str(e)}"
-            errors.append(err_msg)
-            print(f"[fetch] {err_msg}")
-
-    return {"error": "All methods failed", "details": errors}
-
-
-# ==========================
-# API ROUTES
-# ==========================
-
-@app.route("/")
-def home():
-    return jsonify({
-        "status": "ok",
-        "service": "Instagram Public Video API",
-        "version": "3.0",
-        "methods": ["snapinsta", "savefrom", "rapidapi", "ytdlp"]
-    })
-
-
-@app.route("/api/health")
-def health():
-    """Debug endpoint to check if service is running"""
-    return jsonify({
-        "status": "healthy",
-        "cache_size": len(cache),
-        "rapidapi_configured": bool(os.getenv("RAPIDAPI_KEY"))
-    })
-
-
-@app.route("/api/fetch", methods=["POST"])
-def fetch():
-    data = request.get_json() or {}
-    url = data.get("url", "").strip()
-
-    if not url:
-        return jsonify({"success": False, "message": "No URL provided"}), 400
-
-    if "instagram.com" not in url:
-        return jsonify({"success": False, "message": "Invalid Instagram URL"}), 400
-
-    shortcode = extract_shortcode(url)
-    if not shortcode:
-        return jsonify({"success": False, "message": "Could not extract post ID from URL"}), 400
-
-    result = get_video(url)
-
-    if "error" in result:
-        return jsonify({
-            "success": False,
-            "message": "Failed to fetch video. Instagram may require login, or the post is private/deleted.",
-            "debug": result.get("details", [])
-        }), 500
-
-    return jsonify({
-        "success": True,
-        "videoUrl": result["video_url"],
-        "title": result.get("title", "Instagram Video"),
-        "thumbnail": result.get("thumbnail", ""),
-        "uploader": result.get("uploader", ""),
-        "source": result.get("source", "unknown")
-    })
-
-
 @app.route("/api/download")
 def download():
+    """Proxy download to bypass CORS"""
     video_url = request.args.get("url")
     mode = request.args.get("mode", "download")
     custom_filename = request.args.get("filename", "")
@@ -373,7 +263,6 @@ def download():
 
         r = session.get(video_url, stream=True, timeout=30, headers=source_headers, allow_redirects=True)
 
-        # Handle case where URL redirects
         if r.status_code in (301, 302, 307, 308):
             r = session.get(r.headers.get("Location", video_url), stream=True, timeout=30, headers=source_headers)
 
@@ -413,10 +302,6 @@ def download():
         print(f"[download] Error: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-
-# ==========================
-# START
-# ==========================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
